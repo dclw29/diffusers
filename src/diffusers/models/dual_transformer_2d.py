@@ -88,7 +88,7 @@ class DualTransformer2DModel(nn.Module):
 
         # The shape of `encoder_hidden_states` is expected to be
         # `(batch_size, condition_lengths[0]+condition_lengths[1], num_features)`
-        self.condition_lengths = [77, 257]
+        self.condition_lengths = [32, 32] #[77, 257]
 
         # Which transformer to use to encode which condition.
         # E.g. `(1, 0)` means that we'll use `transformers[1](conditions[0])` and `transformers[0](conditions[1])`
@@ -123,14 +123,20 @@ class DualTransformer2DModel(nn.Module):
             [`~models.transformer_2d.Transformer2DModelOutput`] if `return_dict` is True, otherwise a `tuple`. When
             returning a tuple, the first element is the sample tensor.
         """
+        # have embed state be two previous states combined? condition length can therefore be the two lengths summed?
         input_states = hidden_states
-
         encoded_states = []
         tokens_start = 0
+
+        ###### I am most unsure about this, is it safe just to slice the inputs in two because of the two input layers? #####
+        # condition lengths are half each of the input encoded hidden states sequence length (shape batch, seq length, feature length*2)
+        encoded_inner_dim = encoder_hidden_states.shape[-1]
+        self.condition_lengths = [int(encoded_inner_dim/2), int(encoded_inner_dim/2)]
+
         # attention_mask is not used yet
         for i in range(2):
             # for each of the two transformers, pass the corresponding condition tokens
-            condition_state = encoder_hidden_states[:, tokens_start : tokens_start + self.condition_lengths[i]]
+            condition_state = encoder_hidden_states[:, :, tokens_start : tokens_start + self.condition_lengths[i]]
             transformer_index = self.transformer_index_for_condition[i]
             encoded_state = self.transformers[transformer_index](
                 input_states,

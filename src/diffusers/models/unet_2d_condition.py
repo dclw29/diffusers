@@ -123,6 +123,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         num_class_embeds: Optional[int] = None,
         upcast_attention: bool = False,
         resnet_time_scale_shift: str = "default",
+        num_attention_heads: int = 16, # for the encoder_hidden_states pre processing, LSPR
     ):
         super().__init__()
 
@@ -131,6 +132,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
 
         # input
         self.conv_in = nn.Conv2d(in_channels, block_out_channels[0], kernel_size=3, padding=(1, 1))
+        # times two because two channels input
+        self.conv_in_encoded = nn.Conv2d(in_channels*2, cross_attention_dim*2, kernel_size=3, padding=(1, 1))
 
         # time
         self.time_proj = Timesteps(block_out_channels[0], flip_sin_to_cos, freq_shift)
@@ -347,6 +350,17 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         if isinstance(module, (CrossAttnDownBlock2D, DownBlock2D, CrossAttnUpBlock2D, UpBlock2D)):
             module.gradient_checkpointing = value
 
+    def prepare_encoder_hidden_state_in(self, encoder_hidden_states):
+        """
+        Prepare encoder hidden state (torch.FloatTensor): (batch, channel, height, width)
+        Convert to (batch, sequence_length, feature_dim) to match hidden state multipliers
+        """
+        batch, in_channel, height, width = encoder_hidden_states.shape
+        encoder_hidden_states = self.conv_in_encoded(encoder_hidden_states)
+        inner_dim = encoder_hidden_states.shape[1]
+        encoder_hidden_states = encoder_hidden_states.permute(0, 2, 3, 1).reshape(batch, height * width, inner_dim)
+        return encoder_hidden_states
+
     def forward(
         self,
         sample: torch.FloatTensor,
@@ -362,6 +376,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             sample (`torch.FloatTensor`): (batch, channel, height, width) noisy inputs tensor
             timestep (`torch.FloatTensor` or `float` or `int`): (batch) timesteps
             encoder_hidden_states (`torch.FloatTensor`): (batch, sequence_length, feature_dim) encoder hidden states
+            encoder_hidden_states changed to (batch, channel, height, width) shape for adjacent images
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`models.unet_2d_condition.UNet2DConditionOutput`] instead of a plain tuple.
 
@@ -392,6 +407,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         # 0. center input if necessary
         if self.config.center_input_sample:
             sample = 2 * sample - 1.0
+            # LSPR
+            encoder_hidden_states = 2 * encoder_hidden_states - 1.0
 
         # 1. time
         timesteps = timestep
@@ -429,13 +446,18 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             emb = emb + class_emb
 
         # 2. pre-process
+        # run the same pre-processed convolutions on the hidden state input image so we can condition between the 4D -> 3D cases
         sample = self.conv_in(sample)
+        encoder_hidden_states = self.prepare_encoder_hidden_state_in(encoder_hidden_states)
+        # note that we're combining our two input images into one linear projection and conditioning on that (using two transformers that are split in twain)
+        # This is likely not the best solution for conditioning (ideally we could keep the 3D image shape)
+        # It also places a heavy reliance on the conv used in prepare_encoder_hidden_state_in
 
         # 3. down
         down_block_res_samples = (sample,)
         for downsample_block in self.down_blocks:
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
-                sample, res_samples = downsample_block(
+                sample, res_samples = downsample_block( # get the processed encoder hidden states through
                     hidden_states=sample,
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,

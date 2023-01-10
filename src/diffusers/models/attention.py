@@ -244,6 +244,7 @@ class BasicTransformerBlock(nn.Module):
         attention_mask=None,
         cross_attention_kwargs=None,
     ):
+
         # 1. Self-Attention
         norm_hidden_states = (
             self.norm1(hidden_states, timestep) if self.use_ada_layer_norm else self.norm1(hidden_states)

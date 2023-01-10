@@ -23,7 +23,7 @@ from ..models.embeddings import ImagePositionalEmbeddings
 from ..utils import BaseOutput
 from .attention import BasicTransformerBlock
 from .modeling_utils import ModelMixin
-
+from .LSPR_blocks import NIN as NIN
 
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
@@ -193,13 +193,14 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             [`~models.transformer_2d.Transformer2DModelOutput`] if `return_dict` is True, otherwise a `tuple`. When
             returning a tuple, the first element is the sample tensor.
         """
+
         # 1. Input
         if self.is_input_continuous:
             batch, channel, height, width = hidden_states.shape
             residual = hidden_states
 
             hidden_states = self.norm(hidden_states)
-            if not self.use_linear_projection:
+            if not self.use_linear_projection: # if NOT liner projection (use this, so no secondary conv needed)
                 hidden_states = self.proj_in(hidden_states)
                 inner_dim = hidden_states.shape[1]
                 hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(batch, height * width, inner_dim)

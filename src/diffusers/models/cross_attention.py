@@ -16,16 +16,16 @@ from typing import Optional, Union
 import torch
 import torch.nn.functional as F
 from torch import nn
+import numpy as np
 
 from ..utils.import_utils import is_xformers_available
-
+from .LSPR_blocks import NIN as NIN
 
 if is_xformers_available():
     import xformers
     import xformers.ops
 else:
     xformers = None
-
 
 class CrossAttention(nn.Module):
     r"""
@@ -55,6 +55,7 @@ class CrossAttention(nn.Module):
         added_kv_proj_dim: Optional[int] = None,
         norm_num_groups: Optional[int] = None,
         processor: Optional["AttnProcessor"] = None,
+        init_scale = 0.0,
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -77,16 +78,23 @@ class CrossAttention(nn.Module):
         else:
             self.group_norm = None
 
+        # use NIN layer instead of linear layer for querying
+        #self.to_q = NIN(query_dim, inner_dim)
+        #self.to_k = NIN(cross_attention_dim, inner_dim)
+        #self.to_v = NIN(cross_attention_dim, inner_dim)
         self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
         self.to_k = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
         self.to_v = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
 
         if self.added_kv_proj_dim is not None:
+            #self.add_k_proj = NIN(added_kv_proj_dim, cross_attention_dim)
+            #self.add_k_proj = NIN(added_kv_proj_dim, cross_attention_dim)
             self.add_k_proj = nn.Linear(added_kv_proj_dim, cross_attention_dim)
             self.add_v_proj = nn.Linear(added_kv_proj_dim, cross_attention_dim)
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(inner_dim, query_dim))
+        #self.to_out.append(NIN(inner_dim, query_dim, init_scale=init_scale))
         self.to_out.append(nn.Dropout(dropout))
 
         # set attention processor
@@ -153,6 +161,7 @@ class CrossAttention(nn.Module):
         # The `CrossAttention` class can call different attention processors / attention functions
         # here we simply pass along all tensors to the selected processor class
         # For standard processors that are defined here, `**cross_attention_kwargs` is empty
+        # Note that when running self attention, encoder_hidden_states will be None. Self attention always occurs first (prior to cross attn)
         return self.processor(
             self,
             hidden_states,
@@ -312,20 +321,19 @@ class SlicedAttnProcessor:
         self.slice_size = slice_size
 
     def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
-        batch_size, sequence_length, _ = hidden_states.shape
+        batch_size, sequence_length, _ = hidden_states.shape # sequence length is feture map of channels
 
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length)
-
         query = attn.to_q(hidden_states)
         dim = query.shape[-1]
         query = attn.head_to_batch_dim(query)
 
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
-
         batch_size_attention = query.shape[0]
         hidden_states = torch.zeros(
             (batch_size_attention, sequence_length, dim // attn.heads), device=query.device, dtype=query.dtype

@@ -701,7 +701,6 @@ class CrossAttnDownBlock2D(nn.Module):
 
         self.has_cross_attention = True
         self.attn_num_head_channels = attn_num_head_channels
-
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
             resnets.append(
@@ -733,7 +732,7 @@ class CrossAttnDownBlock2D(nn.Module):
                     )
                 )
             else:
-                attentions.append(
+                attentions.append( # using dual attention
                     DualTransformer2DModel(
                         attn_num_head_channels,
                         out_channels // attn_num_head_channels,
@@ -764,10 +763,8 @@ class CrossAttnDownBlock2D(nn.Module):
     ):
         # TODO(Patrick, William) - attention mask is not used
         output_states = ()
-
         for resnet, attn in zip(self.resnets, self.attentions):
             if self.training and self.gradient_checkpointing:
-
                 def create_custom_forward(module, return_dict=None):
                     def custom_forward(*inputs):
                         if return_dict is not None:
